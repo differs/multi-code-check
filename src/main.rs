@@ -40,6 +40,14 @@ enum Command {
         #[arg(long, default_value_t = true)]
         case_insensitive: bool,
 
+        /// Additional ignore rule files/directories (gitignore syntax)
+        #[arg(long = "ignore-file", short = 'i')]
+        ignore_file_paths: Vec<PathBuf>,
+
+        /// Whether to read .gitignore/.mccignore automatically
+        #[arg(long, default_value_t = true)]
+        use_gitignore: bool,
+
         /// Additional markdown rule files or folders
         #[arg(long = "rules", short = 'r')]
         rule_paths: Vec<PathBuf>,
@@ -62,6 +70,12 @@ enum Command {
         #[arg(long, default_value_t = true)]
         case_insensitive: bool,
 
+        #[arg(long = "ignore-file", short = 'i')]
+        ignore_file_paths: Vec<PathBuf>,
+
+        #[arg(long, default_value_t = true)]
+        use_gitignore: bool,
+
         #[arg(long = "rules", short = 'r')]
         rule_paths: Vec<PathBuf>,
 
@@ -79,6 +93,8 @@ fn main() -> Result<()> {
         max_findings: 400,
         include_hidden: false,
         case_insensitive: true,
+        ignore_file_paths: Vec::new(),
+        use_gitignore: true,
         rule_paths: Vec::new(),
     }) {
         Command::Mcp {
@@ -87,6 +103,8 @@ fn main() -> Result<()> {
             max_findings,
             include_hidden,
             case_insensitive,
+            ignore_file_paths,
+            use_gitignore,
             rule_paths,
         } => mcp::run_stdio_server(mcp::ServerConfig {
             default_scan: ScanOptions {
@@ -95,6 +113,8 @@ fn main() -> Result<()> {
                 max_findings,
                 include_hidden,
                 case_insensitive,
+                ignore_file_paths,
+                use_gitignore,
             },
             default_rule_paths: rule_paths,
         }),
@@ -104,6 +124,8 @@ fn main() -> Result<()> {
             max_findings,
             include_hidden,
             case_insensitive,
+            ignore_file_paths,
+            use_gitignore,
             rule_paths,
             json,
         } => {
@@ -113,6 +135,8 @@ fn main() -> Result<()> {
                 max_findings,
                 include_hidden,
                 case_insensitive,
+                ignore_file_paths,
+                use_gitignore,
             };
             let compiled_rules = rules::load_rules(&rule_paths)?;
             let report = scanner::run_scan(&options, &compiled_rules)?;

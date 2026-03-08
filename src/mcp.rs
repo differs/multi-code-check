@@ -66,6 +66,12 @@ fn handle_request(req: Value, config: &ServerConfig) -> Result<Option<Value>> {
                             "max_findings": {"type": "integer", "minimum": 1, "maximum": 20000},
                             "include_hidden": {"type": "boolean"},
                             "case_insensitive": {"type": "boolean"},
+                            "use_gitignore": {"type": "boolean"},
+                            "ignore_file_paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Ignore files or directories (.gitignore syntax)"
+                            },
                             "rule_paths": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -82,7 +88,12 @@ fn handle_request(req: Value, config: &ServerConfig) -> Result<Option<Value>> {
                         "properties": {
                             "root": {"type": "string"},
                             "max_depth": {"type": "integer", "minimum": 1, "maximum": 16},
-                            "include_hidden": {"type": "boolean"}
+                            "include_hidden": {"type": "boolean"},
+                            "use_gitignore": {"type": "boolean"},
+                            "ignore_file_paths": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
                         }
                     }
                 }
@@ -142,7 +153,19 @@ fn handle_tools_call(params: Value, config: &ServerConfig) -> Result<Value> {
                 args.get("include_hidden"),
                 config.default_scan.include_hidden,
             );
-            let projects = scanner::discover_for_output(&root, max_depth, include_hidden)?;
+            let use_gitignore =
+                parse_bool(args.get("use_gitignore"), config.default_scan.use_gitignore);
+            let ignore_file_paths = merge_path_list(
+                &config.default_scan.ignore_file_paths,
+                args.get("ignore_file_paths"),
+            );
+            let projects = scanner::discover_for_output(
+                &root,
+                max_depth,
+                include_hidden,
+                &ignore_file_paths,
+                use_gitignore,
+            )?;
             Ok(json!({
                 "content": [
                     {"type": "text", "text": format!("discovered {} project(s)", projects.len())}
@@ -165,19 +188,13 @@ fn merge_scan_options(base: &ScanOptions, args: &Value) -> Result<ScanOptions> {
         max_findings: parse_usize(args.get("max_findings"), base.max_findings),
         include_hidden: parse_bool(args.get("include_hidden"), base.include_hidden),
         case_insensitive: parse_bool(args.get("case_insensitive"), base.case_insensitive),
+        ignore_file_paths: merge_path_list(&base.ignore_file_paths, args.get("ignore_file_paths")),
+        use_gitignore: parse_bool(args.get("use_gitignore"), base.use_gitignore),
     })
 }
 
 fn merge_rule_paths(base: &[PathBuf], args: &Value) -> Result<Vec<PathBuf>> {
-    let mut out = base.to_vec();
-    if let Some(values) = args.get("rule_paths").and_then(|x| x.as_array()) {
-        for item in values {
-            if let Some(raw) = item.as_str() {
-                out.push(PathBuf::from(raw));
-            }
-        }
-    }
-    Ok(out)
+    Ok(merge_path_list(base, args.get("rule_paths")))
 }
 
 fn parse_root(value: Option<&Value>, fallback: &std::path::Path) -> Result<PathBuf> {
@@ -202,6 +219,18 @@ fn parse_usize(value: Option<&Value>, fallback: usize) -> usize {
 
 fn parse_bool(value: Option<&Value>, fallback: bool) -> bool {
     value.and_then(|x| x.as_bool()).unwrap_or(fallback)
+}
+
+fn merge_path_list(base: &[PathBuf], value: Option<&Value>) -> Vec<PathBuf> {
+    let mut out = base.to_vec();
+    if let Some(values) = value.and_then(|x| x.as_array()) {
+        for item in values {
+            if let Some(raw) = item.as_str() {
+                out.push(PathBuf::from(raw));
+            }
+        }
+    }
+    out
 }
 
 fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>> {

@@ -1,6 +1,7 @@
 use crate::model::{DiscoverProject, Finding, ProjectSummary, ScanReport, ScanSummary, Severity};
 use crate::rules::Rule;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,21 +24,21 @@ const PROJECT_MARKERS: &[&str] = &[
     "project.clj",
 ];
 
-const IGNORE_DIRS: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    "dist",
-    "build",
-    "out",
-    ".dart_tool",
-    "coverage",
-    "artifacts",
-    "venv",
-    ".venv",
-    "__pycache__",
-    ".idea",
-    ".vscode",
+const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
+    "**/.git/",
+    "**/target/",
+    "**/node_modules/",
+    "**/dist/",
+    "**/build/",
+    "**/out/",
+    "**/.dart_tool/",
+    "**/coverage/",
+    "**/artifacts/",
+    "**/venv/",
+    "**/.venv/",
+    "**/__pycache__/",
+    "**/.idea/",
+    "**/.vscode/",
 ];
 
 const MAX_FILE_SIZE_BYTES: u64 = 2 * 1024 * 1024;
@@ -49,6 +50,8 @@ pub struct ScanOptions {
     pub max_findings: usize,
     pub include_hidden: bool,
     pub case_insensitive: bool,
+    pub ignore_file_paths: Vec<PathBuf>,
+    pub use_gitignore: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +65,20 @@ struct FindingCollector {
     limit: usize,
     findings: Vec<Finding>,
     dropped: usize,
+}
+
+#[derive(Debug)]
+struct IgnoreMatcher {
+    include_hidden: bool,
+    gitignore: Gitignore,
+}
+
+impl IgnoreMatcher {
+    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        self.gitignore
+            .matched_path_or_any_parents(path, is_dir)
+            .is_ignore()
+    }
 }
 
 impl FindingCollector {
@@ -88,7 +105,8 @@ impl FindingCollector {
 
 pub fn run_scan(options: &ScanOptions, rules: &[Rule]) -> Result<ScanReport> {
     let root = normalize_path(&options.root)?;
-    let projects = discover_projects(&root, options.max_depth, options.include_hidden)?;
+    let root_matcher = build_ignore_matcher(&root, &root, options)?;
+    let projects = discover_projects(&root, options.max_depth, &root_matcher)?;
 
     let mut collector = FindingCollector::new(options.max_findings.max(1));
     let mut project_summaries = Vec::new();
@@ -96,7 +114,15 @@ pub fn run_scan(options: &ScanOptions, rules: &[Rule]) -> Result<ScanReport> {
 
     for project in &projects {
         let visible_before = collector.len();
-        let summary = scan_project(project, &root, options, rules, &mut collector)?;
+        let project_matcher = build_ignore_matcher(&root, &project.path, options)?;
+        let summary = scan_project(
+            project,
+            &root,
+            options,
+            rules,
+            &project_matcher,
+            &mut collector,
+        )?;
         total_files += summary.file_count;
 
         let mut summary = summary;
@@ -126,9 +152,21 @@ pub fn discover_for_output(
     root: &Path,
     max_depth: usize,
     include_hidden: bool,
+    ignore_file_paths: &[PathBuf],
+    use_gitignore: bool,
 ) -> Result<Vec<DiscoverProject>> {
     let normalized = normalize_path(root)?;
-    let projects = discover_projects(&normalized, max_depth, include_hidden)?;
+    let options = ScanOptions {
+        root: normalized.clone(),
+        max_depth,
+        max_findings: 1,
+        include_hidden,
+        case_insensitive: true,
+        ignore_file_paths: ignore_file_paths.to_vec(),
+        use_gitignore,
+    };
+    let matcher = build_ignore_matcher(&normalized, &normalized, &options)?;
+    let projects = discover_projects(&normalized, max_depth, &matcher)?;
     Ok(projects
         .into_iter()
         .map(|p| DiscoverProject {
@@ -198,6 +236,7 @@ fn scan_project(
     workspace_root: &Path,
     options: &ScanOptions,
     rules: &[Rule],
+    ignore_matcher: &IgnoreMatcher,
     collector: &mut FindingCollector,
 ) -> Result<ProjectSummary> {
     let mut file_count = 0usize;
@@ -210,7 +249,7 @@ fn scan_project(
     for entry in WalkDir::new(&project.path)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| should_visit(e, options.include_hidden))
+        .filter_entry(|e| should_visit(e, ignore_matcher))
         .filter_map(|e| e.ok())
     {
         if !entry.file_type().is_file() {
@@ -399,7 +438,7 @@ fn check_general_line_quality(
 fn discover_projects(
     root: &Path,
     max_depth: usize,
-    include_hidden: bool,
+    ignore_matcher: &IgnoreMatcher,
 ) -> Result<Vec<DiscoveredProject>> {
     let mut found = BTreeMap::<PathBuf, BTreeSet<String>>::new();
 
@@ -407,7 +446,7 @@ fn discover_projects(
         .follow_links(false)
         .max_depth(max_depth)
         .into_iter()
-        .filter_entry(|e| should_visit(e, include_hidden))
+        .filter_entry(|e| should_visit(e, ignore_matcher))
         .filter_map(|e| e.ok())
     {
         if entry.file_type().is_dir() {
@@ -463,15 +502,120 @@ fn discover_projects(
         .collect::<Vec<_>>())
 }
 
-fn should_visit(entry: &DirEntry, include_hidden: bool) -> bool {
+fn should_visit(entry: &DirEntry, ignore_matcher: &IgnoreMatcher) -> bool {
     if entry.depth() == 0 {
         return true;
     }
     let name = entry.file_name().to_string_lossy();
-    if !include_hidden && name.starts_with('.') {
+    if !ignore_matcher.include_hidden && name.starts_with('.') {
         return false;
     }
-    !IGNORE_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
+    !ignore_matcher.is_ignored(entry.path(), entry.file_type().is_dir())
+}
+
+fn build_ignore_matcher(
+    scan_root: &Path,
+    project_root: &Path,
+    options: &ScanOptions,
+) -> Result<IgnoreMatcher> {
+    let mut builder = GitignoreBuilder::new(project_root);
+
+    for pattern in DEFAULT_IGNORE_PATTERNS {
+        builder
+            .add_line(None, pattern)
+            .map_err(|e| anyhow!("invalid builtin ignore pattern '{pattern}': {e}"))?;
+    }
+
+    let ignore_files = collect_ignore_files(scan_root, project_root, options)?;
+    for ignore_file in ignore_files {
+        if let Some(err) = builder.add(&ignore_file) {
+            return Err(anyhow!(
+                "failed to load ignore file '{}': {}",
+                ignore_file.display(),
+                err
+            ));
+        }
+    }
+
+    let gitignore = builder
+        .build()
+        .map_err(|e| anyhow!("failed to build ignore matcher: {e}"))?;
+
+    Ok(IgnoreMatcher {
+        include_hidden: options.include_hidden,
+        gitignore,
+    })
+}
+
+fn collect_ignore_files(
+    scan_root: &Path,
+    project_root: &Path,
+    options: &ScanOptions,
+) -> Result<Vec<PathBuf>> {
+    let mut files = BTreeSet::new();
+
+    if options.use_gitignore {
+        for candidate in [
+            scan_root.join(".gitignore"),
+            scan_root.join(".mccignore"),
+            project_root.join(".gitignore"),
+            project_root.join(".mccignore"),
+        ] {
+            if candidate.is_file() {
+                files.insert(candidate);
+            }
+        }
+    }
+
+    for raw in &options.ignore_file_paths {
+        let resolved = if raw.is_absolute() {
+            raw.clone()
+        } else {
+            scan_root.join(raw)
+        };
+
+        if resolved.is_file() {
+            files.insert(resolved);
+            continue;
+        }
+
+        if resolved.is_dir() {
+            for entry in WalkDir::new(&resolved)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|x| x.ok())
+            {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                if is_ignore_file(entry.path()) {
+                    files.insert(entry.path().to_path_buf());
+                }
+            }
+            continue;
+        }
+
+        return Err(anyhow!(
+            "ignore path does not exist: {}",
+            resolved.display()
+        ));
+    }
+
+    Ok(files.into_iter().collect::<Vec<_>>())
+}
+
+fn is_ignore_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|x| x.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower == ".gitignore" || lower == ".mccignore" {
+        return true;
+    }
+    path.extension()
+        .and_then(|x| x.to_str())
+        .map(|x| x.eq_ignore_ascii_case("ignore"))
+        .unwrap_or(false)
 }
 
 fn detect_language(path: &Path) -> String {
@@ -484,6 +628,8 @@ fn detect_language(path: &Path) -> String {
         "rs" => "rust",
         "js" | "mjs" | "cjs" | "jsx" => "javascript",
         "ts" | "tsx" => "typescript",
+        "vue" => "vue",
+        "svelte" => "svelte",
         "py" => "python",
         "go" => "go",
         "dart" => "dart",
@@ -493,6 +639,7 @@ fn detect_language(path: &Path) -> String {
         "rb" => "ruby",
         "php" => "php",
         "sh" | "bash" | "zsh" => "shell",
+        "sql" => "sql",
         "c" => "c",
         "cc" | "cpp" | "cxx" | "hpp" | "hh" => "cpp",
         "cs" => "csharp",
