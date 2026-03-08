@@ -11,6 +11,14 @@ pub struct ServerConfig {
     pub default_rule_paths: Vec<PathBuf>,
 }
 
+fn negotiated_protocol_version(params: &Value) -> String {
+    params
+        .get("protocolVersion")
+        .and_then(|x| x.as_str())
+        .unwrap_or("2024-11-05")
+        .to_string()
+}
+
 pub fn run_stdio_server(config: ServerConfig) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -41,10 +49,11 @@ fn handle_request(req: Value, config: &ServerConfig) -> Result<Option<Value>> {
 
     let id = id.expect("checked is_some");
     let params = req.get("params").cloned().unwrap_or(Value::Null);
+    let protocol_version = negotiated_protocol_version(&params);
 
     let result = match method {
         "initialize" => Ok(json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": protocol_version,
             "capabilities": {
                 "tools": { "listChanged": false }
             },
@@ -254,15 +263,20 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>> {
         if trimmed.is_empty() {
             break;
         }
-        if let Some(raw) = trimmed.strip_prefix("Content-Length:") {
-            content_length = Some(
-                raw.trim()
-                    .parse::<usize>()
-                    .context("invalid Content-Length")?,
-            );
+        if let Some((name, raw)) = trimmed.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("Content-Length") {
+                content_length = Some(
+                    raw.trim()
+                        .parse::<usize>()
+                        .context("invalid Content-Length")?,
+                );
+            }
         }
         line.clear();
-        reader.read_line(&mut line)?;
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            return Err(anyhow!("unexpected EOF while reading MCP headers"));
+        }
     }
 
     let length = content_length.ok_or_else(|| anyhow!("missing Content-Length header"))?;
@@ -278,4 +292,29 @@ fn write_message(writer: &mut impl Write, value: &Value) -> Result<()> {
     writer.write_all(&body)?;
     writer.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn read_message_accepts_lowercase_content_length() {
+        let payload = r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#;
+        let wire = format!("content-length: {}\r\n\r\n{}", payload.len(), payload);
+        let mut reader = BufReader::new(Cursor::new(wire.into_bytes()));
+        let parsed = read_message(&mut reader).unwrap().unwrap();
+        assert_eq!(parsed.get("method").and_then(|x| x.as_str()), Some("ping"));
+    }
+
+    #[test]
+    fn initialize_uses_client_protocol_version_when_present() {
+        let params = json!({"protocolVersion":"2025-06-18"});
+        assert_eq!(negotiated_protocol_version(&params), "2025-06-18");
+        assert_eq!(
+            negotiated_protocol_version(&Value::Null),
+            "2024-11-05".to_string()
+        );
+    }
 }
