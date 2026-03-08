@@ -288,7 +288,7 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>> {
 
 fn write_message(writer: &mut impl Write, value: &Value) -> Result<()> {
     let body = serde_json::to_vec(value)?;
-    write!(writer, "Content-Length: {}\\r\\n\\r\\n", body.len())?;
+    write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
     writer.write_all(&body)?;
     writer.flush()?;
     Ok(())
@@ -316,5 +316,22 @@ mod tests {
             negotiated_protocol_version(&Value::Null),
             "2024-11-05".to_string()
         );
+    }
+
+    #[test]
+    fn write_message_uses_crlf_frame_separator() {
+        let mut out = Vec::new();
+        write_message(
+            &mut out,
+            &json!({"jsonrpc":"2.0","id":1,"result":{"ok":true}}),
+        )
+        .unwrap();
+
+        let header_end = out
+            .windows(4)
+            .position(|x| x == b"\r\n\r\n")
+            .expect("missing CRLF frame separator");
+        assert!(header_end > 0);
+        assert!(!out.windows(4).any(|x| x == b"\\r\\n"));
     }
 }
