@@ -12,6 +12,7 @@ languages: typescript
 type: contains
 pattern: @ts-ignore
 message: Avoid @ts-ignore.
+exclude_path: (^|/)tests?/
 ignore_case: true
 enabled: true
 ```
@@ -24,6 +25,8 @@ enabled: true
 - `type`：`contains` 或 `regex`
 - `pattern`（必填）：匹配表达式
 - `message`：命中提示
+- `include_path`：路径正则（命中才生效，匹配相对扫描根路径）
+- `exclude_path`：路径正则（命中则跳过）
 - `ignore_case`：是否忽略大小写（默认 true）
 - `enabled`：`false` 表示禁用
 
@@ -69,6 +72,7 @@ rules/
 `regex`：
 - 复杂模式匹配
 - 注意转义和性能
+- 可与 `include_path` / `exclude_path` 组合做分级（如 `src/` 高危、`tests/` 低危）
 
 ## 5) 示例
 

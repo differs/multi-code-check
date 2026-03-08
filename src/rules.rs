@@ -21,6 +21,14 @@ enum RuleMatcher {
 }
 
 #[derive(Clone, Debug)]
+struct PathMatcher {
+    include_sensitive: Option<Regex>,
+    include_insensitive: Option<Regex>,
+    exclude_sensitive: Option<Regex>,
+    exclude_insensitive: Option<Regex>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Rule {
     pub id: String,
     pub severity: Severity,
@@ -29,6 +37,7 @@ pub struct Rule {
     pub ignore_case: bool,
     pub source: String,
     matcher: RuleMatcher,
+    path_matcher: Option<PathMatcher>,
 }
 
 impl Rule {
@@ -36,6 +45,46 @@ impl Rule {
         self.languages
             .iter()
             .any(|x| x == "*" || x.eq_ignore_ascii_case(language))
+    }
+
+    pub fn applies_to_path(&self, path: &str, global_case_insensitive: bool) -> bool {
+        let Some(path_matcher) = &self.path_matcher else {
+            return true;
+        };
+        let effective_ignore_case = global_case_insensitive || self.ignore_case;
+
+        let include_ok = if effective_ignore_case {
+            path_matcher
+                .include_insensitive
+                .as_ref()
+                .map(|re| re.is_match(path))
+                .unwrap_or(true)
+        } else {
+            path_matcher
+                .include_sensitive
+                .as_ref()
+                .map(|re| re.is_match(path))
+                .unwrap_or(true)
+        };
+        if !include_ok {
+            return false;
+        }
+
+        let excluded = if effective_ignore_case {
+            path_matcher
+                .exclude_insensitive
+                .as_ref()
+                .map(|re| re.is_match(path))
+                .unwrap_or(false)
+        } else {
+            path_matcher
+                .exclude_sensitive
+                .as_ref()
+                .map(|re| re.is_match(path))
+                .unwrap_or(false)
+        };
+
+        !excluded
     }
 
     pub fn matches_line(&self, line: &str, global_case_insensitive: bool) -> bool {
@@ -75,6 +124,8 @@ struct RuleBuilder {
     message: Option<String>,
     ignore_case: Option<bool>,
     enabled: Option<bool>,
+    include_path: Option<String>,
+    exclude_path: Option<String>,
 }
 
 impl RuleBuilder {
@@ -88,6 +139,8 @@ impl RuleBuilder {
             message: None,
             ignore_case: None,
             enabled: None,
+            include_path: None,
+            exclude_path: None,
         }
     }
 
@@ -121,6 +174,8 @@ impl RuleBuilder {
             .message
             .unwrap_or_else(|| format!("Rule '{id}' matched pattern '{pattern}'"));
         let ignore_case = self.ignore_case.unwrap_or(true);
+        let include_path = self.include_path;
+        let exclude_path = self.exclude_path;
 
         let matcher = match kind.to_ascii_lowercase().as_str() {
             "contains" => RuleMatcher::Contains {
@@ -144,6 +199,35 @@ impl RuleBuilder {
             other => return Err(anyhow!("unsupported rule type '{other}' in {source}")),
         };
 
+        let path_matcher = if include_path.is_some() || exclude_path.is_some() {
+            let include_sensitive = compile_optional_regex(
+                include_path.as_deref(),
+                false,
+                &id,
+                source,
+                "include_path",
+            )?;
+            let include_insensitive =
+                compile_optional_regex(include_path.as_deref(), true, &id, source, "include_path")?;
+            let exclude_sensitive = compile_optional_regex(
+                exclude_path.as_deref(),
+                false,
+                &id,
+                source,
+                "exclude_path",
+            )?;
+            let exclude_insensitive =
+                compile_optional_regex(exclude_path.as_deref(), true, &id, source, "exclude_path")?;
+            Some(PathMatcher {
+                include_sensitive,
+                include_insensitive,
+                exclude_sensitive,
+                exclude_insensitive,
+            })
+        } else {
+            None
+        };
+
         Ok(Some(Rule {
             id,
             severity,
@@ -152,6 +236,7 @@ impl RuleBuilder {
             ignore_case,
             source: source.to_string(),
             matcher,
+            path_matcher,
         }))
     }
 }
@@ -310,6 +395,8 @@ fn parse_rule_block(block: &str) -> RuleBuilder {
             "message" => builder.message = Some(value.to_string()),
             "ignore_case" => builder.ignore_case = parse_bool(value),
             "enabled" => builder.enabled = parse_bool(value),
+            "include_path" | "include_paths" => builder.include_path = Some(value.to_string()),
+            "exclude_path" | "exclude_paths" => builder.exclude_path = Some(value.to_string()),
             _ => {}
         }
     }
@@ -322,6 +409,23 @@ fn parse_bool(raw: &str) -> Option<bool> {
         "false" | "no" | "0" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn compile_optional_regex(
+    pattern: Option<&str>,
+    case_insensitive: bool,
+    id: &str,
+    source: &str,
+    field: &str,
+) -> Result<Option<Regex>> {
+    let Some(pattern) = pattern else {
+        return Ok(None);
+    };
+    let regex = RegexBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .with_context(|| format!("invalid regex for rule '{id}' field '{field}' in {source}"))?;
+    Ok(Some(regex))
 }
 
 fn extract_default_languages_from_markdown(markdown: &str) -> Vec<String> {
@@ -413,4 +517,51 @@ fn canonical_language(raw: &str) -> Option<String> {
     };
 
     Some(mapped.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rule_path_filters_work_with_include_and_exclude() {
+        let markdown = r#"
+```rule
+id: rust_unwrap_prod
+severity: high
+languages: rust
+type: contains
+pattern: unwrap(
+include_path: (^|/)src/
+exclude_path: (^|/)src/generated/
+ignore_case: true
+```
+"#;
+
+        let rules = parse_rules_from_markdown(markdown, "inline:test", &[]).unwrap();
+        let rule = rules.first().unwrap();
+
+        assert!(rule.applies_to_path("foo/src/lib.rs", true));
+        assert!(!rule.applies_to_path("foo/tests/lib.rs", true));
+        assert!(!rule.applies_to_path("foo/src/generated/mod.rs", true));
+    }
+
+    #[test]
+    fn fallback_default_regex_matches_common_variants() {
+        let rules = parse_rules_from_markdown(
+            DEFAULT_RULES_MD,
+            "builtin:rules/default_rules.md",
+            &extract_default_languages_from_markdown(DEFAULT_RULES_MD),
+        )
+        .unwrap();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "global_no_silent_fallback_default")
+            .unwrap();
+
+        assert!(rule.matches_line("fallback to default", true));
+        assert!(rule.matches_line("fall back: default", true));
+        assert!(rule.matches_line("fallback=default", true));
+        assert!(!rule.matches_line("use default when user selected it", true));
+    }
 }

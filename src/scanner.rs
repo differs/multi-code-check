@@ -288,6 +288,15 @@ fn scan_project(
             has_ci_workflow = true;
         }
 
+        let relative_file = relativize(entry.path(), workspace_root);
+        let applicable_rules = rules
+            .iter()
+            .filter(|rule| {
+                rule.applies_to_language(&language)
+                    && rule.applies_to_path(&relative_file, options.case_insensitive)
+            })
+            .collect::<Vec<_>>();
+
         let content = match read_text(entry.path()) {
             Some(c) => c,
             None => continue,
@@ -305,15 +314,12 @@ fn scan_project(
                 options.case_insensitive,
             );
 
-            for rule in rules {
-                if !rule.applies_to_language(&language) {
-                    continue;
-                }
+            for rule in &applicable_rules {
                 if rule.matches_line(line, options.case_insensitive) {
                     collector.push(Finding {
                         severity: rule.severity,
                         project: project.path.display().to_string(),
-                        file: relativize(entry.path(), workspace_root),
+                        file: relative_file.clone(),
                         line: Some(line_index + 1),
                         language: language.clone(),
                         rule_id: rule.id.clone(),

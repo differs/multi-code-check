@@ -8,8 +8,8 @@
 id: global_no_silent_fallback_default
 severity: high
 languages: *
-type: contains
-pattern: fallback to default
+type: regex
+pattern: (?i)fall\s*back\b[\s:=-]*(to[\s:=-]*)?default\b
 message: Avoid silent fallback to default; fail-fast with explicit error.
 ignore_case: true
 ```
@@ -18,9 +18,19 @@ ignore_case: true
 id: global_no_silent_fallback_mem
 severity: high
 languages: *
-type: contains
-pattern: fallback to mem
+type: regex
+pattern: (?i)fall\s*back\b[\s:=-]*(to[\s:=-]*)?(mem(ory)?|in[\s_-]*memory)\b
 message: Avoid silent fallback to memory backend; surface storage failures.
+ignore_case: true
+```
+
+```rule
+id: global_silent_degrade_keyword
+severity: medium
+languages: *
+type: regex
+pattern: (?i)\b(silent|silently)\b.{0,30}\b(fallback|degrad(e|ed|ing)|downgrad(e|ed|ing))\b
+message: Potential silent degrade/fallback path; verify fail-fast behavior.
 ignore_case: true
 ```
 
@@ -159,23 +169,47 @@ ignore_case: true
 ## Backend: Rust
 
 ```rule
-id: rust_no_unwrap
+id: rust_no_unwrap_prod
 severity: high
 languages: rust
 type: contains
 pattern: unwrap(
 message: Avoid unwrap in production path; propagate Result with context.
 ignore_case: true
+exclude_path: (^|/)(tests?|benches?|examples?|mocks?|fixtures?)/|(_test|_bench)\.rs$
 ```
 
 ```rule
-id: rust_no_expect
+id: rust_no_unwrap_test
+severity: medium
+languages: rust
+type: contains
+pattern: unwrap(
+message: unwrap in test/bench code should still be intentional and reviewed.
+ignore_case: true
+include_path: (^|/)(tests?|benches?|examples?|mocks?|fixtures?)/|(_test|_bench)\.rs$
+```
+
+```rule
+id: rust_no_expect_prod
 severity: medium
 languages: rust
 type: contains
 pattern: expect(
 message: Review expect usage; avoid panic in production path.
 ignore_case: true
+exclude_path: (^|/)(tests?|benches?|examples?|mocks?|fixtures?)/|(_test|_bench)\.rs$
+```
+
+```rule
+id: rust_no_expect_test
+severity: low
+languages: rust
+type: contains
+pattern: expect(
+message: expect in test/bench code is lower risk but should include clear context.
+ignore_case: true
+include_path: (^|/)(tests?|benches?|examples?|mocks?|fixtures?)/|(_test|_bench)\.rs$
 ```
 
 ```rule

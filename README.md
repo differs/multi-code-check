@@ -77,6 +77,7 @@ languages: rust
 type: contains
 pattern: unwrap(
 message: Avoid unwrap in production path.
+exclude_path: (^|/)tests?/
 ignore_case: true
 enabled: true
 ```
@@ -89,6 +90,8 @@ enabled: true
 - `type`：`contains` 或 `regex`
 - `pattern`：匹配表达式（必填）
 - `message`：命中提示
+- `include_path`：路径正则（命中才生效，匹配相对扫描根路径）
+- `exclude_path`：路径正则（命中则跳过）
 - `ignore_case`：是否忽略大小写
 - `enabled`：`false` 表示禁用该规则
 
