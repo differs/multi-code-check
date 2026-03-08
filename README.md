@@ -8,7 +8,7 @@
 - 规则大小写无关匹配（默认开启，可关闭）
 - 规则从 Markdown 加载（支持按语言拆分多个规则文件）
 - 支持 `gitignore` 风格忽略（自动 `.gitignore/.mccignore` + 自定义 ignore 文件）
-- MCP tools：`multi_code_check.scan`、`multi_code_check.discover_projects`
+- MCP tools：`multi_code_check_scan`、`multi_code_check_discover_projects`
 
 ## 1. 快速开始（git clone 即可）
 
@@ -161,8 +161,8 @@ cargo run -- mcp --root /path/to/workspaces
 ```
 
 可调用工具：
-- `multi_code_check.scan`
-- `multi_code_check.discover_projects`
+- `multi_code_check_scan`
+- `multi_code_check_discover_projects`
 
 `scan` 支持参数：`root`、`max_depth`、`max_findings`、`include_hidden`、`case_insensitive`、`use_gitignore`、`ignore_file_paths`、`rule_paths`。
 

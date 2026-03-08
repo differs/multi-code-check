@@ -65,7 +65,7 @@ fn handle_request(req: Value, config: &ServerConfig) -> Result<Option<Value>> {
         "tools/list" => Ok(json!({
             "tools": [
                 {
-                    "name": "multi_code_check.scan",
+                    "name": "multi_code_check_scan",
                     "description": "Auto-discover projects under a directory and run case-insensitive multi-language quality checks with markdown rules.",
                     "inputSchema": {
                         "type": "object",
@@ -90,7 +90,7 @@ fn handle_request(req: Value, config: &ServerConfig) -> Result<Option<Value>> {
                     }
                 },
                 {
-                    "name": "multi_code_check.discover_projects",
+                    "name": "multi_code_check_discover_projects",
                     "description": "Discover projects under a directory using manifest/.git markers.",
                     "inputSchema": {
                         "type": "object",
@@ -141,7 +141,7 @@ fn handle_tools_call(params: Value, config: &ServerConfig) -> Result<Value> {
         .unwrap_or_else(|| Value::Object(Default::default()));
 
     match name {
-        "multi_code_check.scan" => {
+        "multi_code_check_scan" | "multi_code_check.scan" => {
             let options = merge_scan_options(&config.default_scan, &args)?;
             let rule_paths = merge_rule_paths(&config.default_rule_paths, &args)?;
             let loaded_rules = rules::load_rules(&rule_paths)?;
@@ -155,7 +155,7 @@ fn handle_tools_call(params: Value, config: &ServerConfig) -> Result<Value> {
                 "isError": false
             }))
         }
-        "multi_code_check.discover_projects" => {
+        "multi_code_check_discover_projects" | "multi_code_check.discover_projects" => {
             let root = parse_root(args.get("root"), &config.default_scan.root)?;
             let max_depth = parse_usize(args.get("max_depth"), config.default_scan.max_depth);
             let include_hidden = parse_bool(
